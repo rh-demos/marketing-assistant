@@ -23,7 +23,7 @@ spec:
           emptyDir: {}
       initContainers:
       - name: encode-password
-        image: 'ghcr.io/mlflow/mlflow:v3.11.1-full'
+        image: 'ghcr.io/mlflow/mlflow:v3.13.0-full'
         imagePullPolicy: Always
         command:
           - /bin/bash
@@ -60,7 +60,7 @@ spec:
             memory: "64Mi"
       containers:
       - name: mlflow
-        image: 'ghcr.io/mlflow/mlflow:v3.11.1-full'
+        image: 'ghcr.io/mlflow/mlflow:v3.13.0-full'
         imagePullPolicy: Always
         command:
           - /bin/bash
@@ -188,10 +188,10 @@ spec:
         resources:
           limits:
             cpu: "2"
-            memory: "2Gi"
+            memory: "4Gi"
           requests:
             cpu: "500m"
-            memory: "1Gi"
+            memory: "2Gi"
       restartPolicy: Always
 ---
 apiVersion: v1

@@ -383,7 +383,8 @@ def _get_username_from_auth() -> str:
         return ""
     try:
         import base64
-        payload = auth.split(".")[1]
+        token = auth.split(" ", 1)[1]
+        payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload))
         return claims.get("preferred_username", "")
