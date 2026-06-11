@@ -1,0 +1,121 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  labels:
+    app: otel-collector
+    app.kubernetes.io/part-of: mlflow
+data:
+  config.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      headers_setter:
+        headers:
+          - action: upsert
+            key: x-mlflow-experiment-id
+            from_context: x-mlflow-experiment-id
+
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+            include_metadata: true
+          grpc:
+            endpoint: 0.0.0.0:4317
+            include_metadata: true
+
+    exporters:
+      otlphttp/mlflow:
+        endpoint: http://mlflow-service:5000
+        headers:
+          Host: mlflow-service
+        auth:
+          authenticator: headers_setter
+        tls:
+          insecure: true
+
+    service:
+      extensions: [health_check, headers_setter]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlphttp/mlflow]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  labels:
+    app: otel-collector
+    app.kubernetes.io/part-of: mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+      - name: otel-collector
+        image: 'ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.127.0'
+        args:
+          - --config=/etc/otel/config.yaml
+        ports:
+          - name: otlp-grpc
+            containerPort: 4317
+            protocol: TCP
+          - name: otlp-http
+            containerPort: 4318
+            protocol: TCP
+        volumeMounts:
+          - name: config
+            mountPath: /etc/otel
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+      volumes:
+      - name: config
+        configMap:
+          name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  labels:
+    app: otel-collector
+spec:
+  ports:
+  - name: otlp-grpc
+    protocol: TCP
+    port: 4317
+    targetPort: otlp-grpc
+  - name: otlp-http
+    protocol: TCP
+    port: 4318
+    targetPort: otlp-http
+  selector:
+    app: otel-collector
+  type: ClusterIP

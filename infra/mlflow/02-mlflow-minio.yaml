@@ -1,0 +1,277 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mlflow-minio-setup
+  labels:
+    app: mlflow-minio
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mlflow-minio-setup-edit
+  labels:
+    app: mlflow-minio
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+subjects:
+- kind: ServiceAccount
+  name: mlflow-minio-setup
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-minio-pvc
+  labels:
+    app: mlflow-minio
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-minio-deployment
+  labels:
+    app: mlflow-minio
+    app.kubernetes.io/part-of: mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow-minio
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: mlflow-minio
+    spec:
+      containers:
+      - name: mlflow-minio
+        image: 'quay.io/minio/minio:latest'
+        ports:
+          - name: api
+            containerPort: 9000
+            protocol: TCP
+          - name: console
+            containerPort: 9090
+            protocol: TCP
+        command:
+          - /bin/bash
+          - -c
+        args:
+          - minio server /data --console-address :9090
+        envFrom:
+          - secretRef:
+              name: mlflow-minio-root-user
+        resources:
+          limits:
+            cpu: "1"
+            memory: "2Gi"
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+        volumeMounts:
+        - mountPath: /data
+          name: mlflow-minio-volume
+      volumes:
+      - name: mlflow-minio-volume
+        persistentVolumeClaim:
+          claimName: mlflow-minio-pvc
+      - emptyDir: {}
+        name: empty
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-mlflow-minio-root-user
+  labels:
+    app: mlflow-minio
+    app.kubernetes.io/part-of: mlflow
+spec:
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app: mlflow-minio
+    spec:
+      containers:
+      - name: create-mlflow-minio-root-user
+        image: 'image-registry.openshift-image-registry.svc:5000/openshift/tools:latest'
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/bash
+        args:
+          - -ec
+          - |-
+            if [ -n "$(oc get secret mlflow-minio-root-user -oname 2>/dev/null)" ]; then
+              echo "Secret already exists. Skipping." >&2
+              exit 0
+            fi
+            genpass() {
+                < /dev/urandom tr -dc _A-Z-a-z-0-9 | head -c"${1:-32}"
+            }
+            id=$(genpass 16)
+            secret=$(genpass)
+            cat << EOF | oc apply -f-
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: mlflow-minio-root-user
+            type: Opaque
+            stringData:
+              MINIO_ROOT_USER: ${id}
+              MINIO_ROOT_PASSWORD: ${secret}
+            EOF
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+      restartPolicy: Never
+      serviceAccount: mlflow-minio-setup
+      serviceAccountName: mlflow-minio-setup
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-minio-buckets
+  labels:
+    app: mlflow-minio
+    app.kubernetes.io/part-of: mlflow
+spec:
+  selector: {}
+  template:
+    metadata:
+      labels:
+        app: mlflow-minio
+    spec:
+      containers:
+      - name: create-buckets
+        image: 'image-registry.openshift-image-registry.svc:5000/redhat-ods-applications/s2i-generic-data-science-notebook:2023.2'
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/bash
+        args:
+          - -ec
+          - |-
+            oc get secret mlflow-minio-root-user
+            env | grep MINIO
+            cat << 'EOF' | python3
+            import boto3, os
+            s3 = boto3.client("s3",
+                              endpoint_url="http://mlflow-minio-service:9000",
+                              aws_access_key_id=os.getenv("MINIO_ROOT_USER"),
+                              aws_secret_access_key=os.getenv("MINIO_ROOT_PASSWORD"))
+            bucket = 'mlflow-bucket'
+            print('creating mlflow-bucket bucket')
+            if bucket not in [bu["Name"] for bu in s3.list_buckets()["Buckets"]]:
+              s3.create_bucket(Bucket=bucket)
+            EOF
+        envFrom:
+          - secretRef:
+              name: mlflow-minio-root-user
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+      initContainers:
+      - name: wait-for-minio
+        image: 'image-registry.openshift-image-registry.svc:5000/openshift/tools:latest'
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/bash
+        args:
+          - -ec
+          - |-
+            echo -n 'Waiting for minio root user secret'
+            while ! oc get secret mlflow-minio-root-user 2>/dev/null | grep -qF mlflow-minio-root-user; do
+            echo -n .
+            sleep 5
+            done; echo
+
+            echo -n 'Waiting for minio deployment'
+            while ! oc get deployment mlflow-minio-deployment 2>/dev/null | grep -qF mlflow-minio-deployment; do
+              echo -n .
+              sleep 5
+            done; echo
+            oc wait --for=condition=available --timeout=60s deployment/mlflow-minio-deployment
+            sleep 10
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+      restartPolicy: Never
+      serviceAccount: mlflow-minio-setup
+      serviceAccountName: mlflow-minio-setup
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-minio-service
+  labels:
+    app: mlflow-minio
+spec:
+  ports:
+  - name: api
+    protocol: TCP
+    port: 9000
+    targetPort: api
+  - name: console
+    protocol: TCP
+    port: 9090
+    targetPort: console
+  selector:
+    app: mlflow-minio
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mlflow-minio-console
+  labels:
+    app: mlflow-minio
+spec:
+  port:
+    targetPort: console
+  tls:
+    insecureEdgeTerminationPolicy: Redirect
+    termination: edge
+  to:
+    kind: Service
+    name: mlflow-minio-service
+    weight: 100
+  wildcardPolicy: None
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mlflow-minio-s3
+  labels:
+    app: mlflow-minio
+spec:
+  port:
+    targetPort: api
+  tls:
+    insecureEdgeTerminationPolicy: Redirect
+    termination: edge
+  to:
+    kind: Service
+    name: mlflow-minio-service
+    weight: 100
+  wildcardPolicy: None

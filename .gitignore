@@ -1,0 +1,53 @@
+# Environment files (keep .env.example)
+.env
+!.env.example
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Kubernetes local
+.k8s.yaml
+
+# Build artifacts
+*.tar
+*.gz
+
+# Temporary files
+tmp/
+temp/
+
+# PRD and sensitive docs
+PRD-*.md
+*Draft*.md
+
+# Node.js
+node_modules/
+frontend/build/
+
+# Presentations
+pptx/
+
+# Claude
+.claude/

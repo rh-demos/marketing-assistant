@@ -1,0 +1,230 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-deployment
+  labels:
+    app: mlflow
+    app.kubernetes.io/part-of: mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      volumes:
+        - name: shared-data
+          emptyDir: {}
+      initContainers:
+      - name: encode-password
+        image: 'ghcr.io/mlflow/mlflow:v3.11.1-full'
+        imagePullPolicy: Always
+        command:
+          - /bin/bash
+          - -c
+        args:
+          - |
+            set -e
+            echo "Encoding database password..."
+            if [ -z "$DATABASE_PASSWORD" ]; then
+              echo "ERROR: DATABASE_PASSWORD environment variable is not set!"
+              exit 1
+            fi
+            python3 -c "import urllib.parse; import os; password = os.environ.get('DATABASE_PASSWORD', ''); encoded = urllib.parse.quote(password, safe=''); print(encoded)" > /shared/encoded_password
+            if [ ! -s /shared/encoded_password ]; then
+              echo "ERROR: Encoded password file is empty!"
+              exit 1
+            fi
+            echo "Password encoded successfully"
+        env:
+          - name: DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: mlflow-postgresql-secret
+                key: database-password
+        volumeMounts:
+          - name: shared-data
+            mountPath: /shared
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+      containers:
+      - name: mlflow
+        image: 'ghcr.io/mlflow/mlflow:v3.11.1-full'
+        imagePullPolicy: Always
+        command:
+          - /bin/bash
+          - -c
+        args:
+          - |
+            set -e
+            echo "Waiting for encoded password file..."
+            while [ ! -f /shared/encoded_password ]; do
+              sleep 1
+            done
+            ENCODED_PASSWORD=$(cat /shared/encoded_password)
+            if [ -z "$ENCODED_PASSWORD" ]; then
+              echo "ERROR: Encoded password is empty!"
+              exit 1
+            fi
+            echo "Starting MLflow server..."
+            echo "Database: ${MLFLOW_DATABASE_HOST}:5432/${MLFLOW_DATABASE_NAME}"
+            echo "User: ${MLFLOW_DATABASE_USERNAME}"
+            ROUTE_HOST=""
+            if command -v oc >/dev/null 2>&1; then
+              ROUTE_HOST=$(oc get route mlflow-route -n "${POD_NAMESPACE}" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+            fi
+            if [ -z "$ROUTE_HOST" ]; then
+              CLUSTER_DOMAIN="${CLUSTER_DOMAIN:-apps.example.com}"
+              ROUTE_HOST="mlflow-route-${POD_NAMESPACE}.${CLUSTER_DOMAIN}"
+            fi
+            ALLOWED_HOSTS="*"
+            CORS_ORIGINS="*"
+            echo "Allowed hosts: ${ALLOWED_HOSTS}"
+            echo "CORS origins: ${CORS_ORIGINS}"
+            MLFLOW_ARGS=(
+              --host 0.0.0.0
+              --port 5000
+              --backend-store-uri "postgresql://${MLFLOW_DATABASE_USERNAME}:${ENCODED_PASSWORD}@${MLFLOW_DATABASE_HOST}:5432/${MLFLOW_DATABASE_NAME}"
+              --serve-artifacts
+              --artifacts-destination "s3://${MLFLOW_S3_BUCKET_NAME}"
+              --allowed-hosts "${ALLOWED_HOSTS}"
+              --cors-allowed-origins "${CORS_ORIGINS}"
+            )
+            exec mlflow server "${MLFLOW_ARGS[@]}"
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: mlflow-minio-root-user
+                key: MINIO_ROOT_USER
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: mlflow-minio-root-user
+                key: MINIO_ROOT_PASSWORD
+          - name: MLFLOW_S3_ENDPOINT_URL
+            value: "http://mlflow-minio-service:9000"
+          - name: MLFLOW_S3_IGNORE_TLS
+            value: "true"
+          - name: MLFLOW_S3_BUCKET_NAME
+            value: "mlflow-bucket"
+          - name: MLFLOW_DATABASE_HOST
+            value: "mlflow-postgresql-service"
+          - name: MLFLOW_DATABASE_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: mlflow-postgresql-secret
+                key: database-user
+          - name: MLFLOW_DATABASE_NAME
+            valueFrom:
+              secretKeyRef:
+                name: mlflow-postgresql-secret
+                key: database-name
+          - name: MLFLOW_DISABLE_HOST_HEADER_VALIDATION
+            value: "true"
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: CLUSTER_DOMAIN
+            value: "apps.example.com"
+        volumeMounts:
+          - name: shared-data
+            mountPath: /shared
+        ports:
+          - name: api
+            containerPort: 5000
+            protocol: TCP
+        startupProbe:
+          httpGet:
+            path: /
+            port: api
+            scheme: HTTP
+            httpHeaders:
+              - name: Host
+                value: mlflow-service
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /
+            port: api
+            scheme: HTTP
+            httpHeaders:
+              - name: Host
+                value: mlflow-service
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: api
+            scheme: HTTP
+            httpHeaders:
+              - name: Host
+                value: mlflow-service
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        resources:
+          limits:
+            cpu: "2"
+            memory: "2Gi"
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-service
+  labels:
+    app: mlflow
+spec:
+  ports:
+    - name: api
+      protocol: TCP
+      port: 5000
+      targetPort: api
+  selector:
+    app: mlflow
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mlflow-route
+  labels:
+    app: mlflow
+spec:
+  port:
+    targetPort: api
+  tls:
+    insecureEdgeTerminationPolicy: Redirect
+    termination: edge
+  to:
+    kind: Service
+    name: mlflow-service
+    weight: 100
+  wildcardPolicy: None
