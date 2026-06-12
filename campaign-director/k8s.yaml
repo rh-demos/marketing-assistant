@@ -46,6 +46,7 @@ spec:
       labels:
         app: campaign-director
     spec:
+      runtimeClassName: kata
       serviceAccountName: campaign-director
       containers:
       - name: campaign-director
@@ -59,11 +60,11 @@ spec:
             name: campaign-director-config
         resources:
           requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
             memory: "512Mi"
-            cpu: "500m"
+            cpu: "200m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
         livenessProbe:
           httpGet:
             path: /healthz
