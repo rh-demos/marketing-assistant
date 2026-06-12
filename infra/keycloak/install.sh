@@ -2,7 +2,7 @@
 # Deploy Keycloak (PostgreSQL + Keycloak Server) to OpenShift
 set -uo pipefail
 
-NAMESPACE="${NAMESPACE:-keycloak}"
+NAMESPACE="${NAMESPACE:-keycloak-sso}"
 KC_REALM="${KC_REALM:-marketing}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 

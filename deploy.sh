@@ -3,7 +3,7 @@
 set -uo pipefail
 
 NAMESPACE="${NAMESPACE:-marketing}"
-KC_NAMESPACE="${KC_NAMESPACE:-keycloak}"
+KC_NAMESPACE="${KC_NAMESPACE:-keycloak-sso}"
 KC_REALM="${KC_REALM:-marketing}"
 MLFLOW_NS="${MLFLOW_NS:-mlflow}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

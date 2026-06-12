@@ -228,7 +228,7 @@ MLflow UI displays three key columns populated by span attributes:
 
 | Column | Span attribute | Source |
 |---|---|---|
-| **Trace name** | `mlflow.traceName` | Root span name. A PostgreSQL trigger on the MLflow DB sets this for OTLP-ingested traces (workaround until MLflow v3.13+). |
+| **Trace name** | `mlflow.traceName` | Root span name. A PostgreSQL trigger populates this from OTLP-ingested spans (OTLP protocol has no trace-level tags). |
 | **Session** | `session.id` | Campaign ID, set by each agent on its root span. |
 | **User** | `user.id` | Keycloak `preferred_username` extracted from the JWT bearer token in campaign-director. Sub-agents inherit the parent trace context via `traceparent` header propagation. |
 

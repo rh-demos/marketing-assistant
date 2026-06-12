@@ -59,10 +59,10 @@ oc wait --for=condition=available --timeout=60s deployment/otel-collector -n "$N
 echo "  OTEL Collector deployed"
 
 # ---------------------------------------------------------------------------
-# Phase 5: MLflow trace-name trigger
+# Phase 5: Install trace-name trigger
 # ---------------------------------------------------------------------------
-# OTLP ingest doesn't set mlflow.traceName (fixed in MLflow v3.13+).
-# Install a PostgreSQL trigger to populate it from root span name.
+# OTLP protocol has no trace-level tags concept, so mlflow.traceName must be
+# populated from the root span name via a PostgreSQL trigger.
 echo "[5/5] Installing trace-name trigger..."
 oc wait --for=condition=Available deployment/mlflow-deployment -n "$NAMESPACE" --timeout=180s 2>/dev/null || true
 

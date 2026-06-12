@@ -2,7 +2,7 @@
 # Uninstall Keycloak from OpenShift (PVCs are preserved by default)
 set -uo pipefail
 
-NAMESPACE="${NAMESPACE:-keycloak}"
+NAMESPACE="${NAMESPACE:-keycloak-sso}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== Keycloak Uninstall ==="

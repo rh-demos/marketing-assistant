@@ -401,7 +401,6 @@ def _set_trace_attributes(campaign_id: str, workflow_name: str):
             username = _get_username_from_auth()
             if username:
                 otel_span.set_attribute("user.id", username)
-            otel_span.set_attribute("mlflow.traceName", workflow_name)
 
 
 @mlflow.trace(name="landing_page")
@@ -497,6 +496,7 @@ class CampaignDirectorAgent:
     async def _create_campaign(self, params: dict) -> dict:
         req = CampaignRequest(**params)
         campaign_id = str(uuid.uuid4())[:8]
+        _set_trace_attributes(campaign_id, "create_campaign")
         campaign = CampaignData(
             id=campaign_id,
             campaign_name=req.campaign_name,
@@ -550,6 +550,7 @@ class CampaignDirectorAgent:
         campaign_id = params.get("campaign_id")
         if not campaign_id:
             return {"error": "campaign_id is required"}
+        _set_trace_attributes(campaign_id, "delete_campaign")
         campaign = campaigns_store.pop(campaign_id, None)
         campaign_name = campaign.campaign_name if campaign else campaign_id[:8]
         asyncio.create_task(_cleanup_k8s_resources(campaign_id))
