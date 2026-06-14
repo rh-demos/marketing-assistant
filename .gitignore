@@ -29,6 +29,7 @@ Thumbs.db
 
 # Kubernetes local
 .k8s.yaml
+.k8s-knative.yaml
 
 # Build artifacts
 *.tar

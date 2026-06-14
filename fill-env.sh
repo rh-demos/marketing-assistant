@@ -2,7 +2,8 @@
 # Fill <TODO> placeholders in k8s.yaml templates to produce .k8s.yaml files.
 #
 # Reads model tokens from the models namespace and cluster domain from
-# OpenShift ingress config, then substitutes into each service's k8s.yaml.
+# OpenShift ingress config, then substitutes into each service's k8s.yaml
+# and k8s-knative.yaml (when present).
 set -uo pipefail
 
 NAMESPACE="${NAMESPACE:-marketing}"
@@ -73,36 +74,47 @@ token_for_service() {
 }
 
 # ---------------------------------------------------------------------------
-# Generate .k8s.yaml from k8s.yaml for each service
+# Generate filled manifests from k8s.yaml / k8s-knative.yaml templates
 # ---------------------------------------------------------------------------
-echo ""
-echo "Generating .k8s.yaml files..."
-
-for svc_dir in "$SCRIPT_DIR"/*/; do
-  svc=$(basename "$svc_dir")
-  src="$svc_dir/k8s.yaml"
-  dst="$svc_dir/.k8s.yaml"
-
-  [ ! -f "$src" ] && continue
+fill_manifest() {
+  local src="$1"
+  local dst="$2"
+  local svc="$3"
 
   if ! grep -q '<TODO' "$src" 2>/dev/null; then
     cp "$src" "$dst"
-    echo "  $svc: copied (no TODOs)"
-    continue
+    echo "  $svc ($(basename "$src")): copied (no TODOs)"
+    return
   fi
 
-  TOKEN=$(token_for_service "$svc")
+  local token
+  token=$(token_for_service "$svc")
 
   sed \
     -e "s|CLUSTER_DOMAIN: \"<TODO>\"|CLUSTER_DOMAIN: \"$CLUSTER_DOMAIN\"|g" \
     -e "s|namespace: \"<TODO>\"|namespace: \"$NAMESPACE\"|g" \
-    -e "s|MODEL_API_KEY: \"<TODO>\"|MODEL_API_KEY: \"$TOKEN\"|g" \
+    -e "s|MODEL_API_KEY: \"<TODO>\"|MODEL_API_KEY: \"$token\"|g" \
     -e "s|<TODO_KC_ISSUER>|$KC_ISSUER|g" \
     "$src" > "$dst"
 
-  echo "  $svc: generated"
+  echo "  $svc ($(basename "$src")): generated"
+}
+
+echo ""
+echo "Generating filled manifests..."
+
+for svc_dir in "$SCRIPT_DIR"/*/; do
+  svc=$(basename "$svc_dir")
+
+  if [ -f "$svc_dir/k8s.yaml" ]; then
+    fill_manifest "$svc_dir/k8s.yaml" "$svc_dir/.k8s.yaml" "$svc"
+  fi
+
+  if [ -f "$svc_dir/k8s-knative.yaml" ]; then
+    fill_manifest "$svc_dir/k8s-knative.yaml" "$svc_dir/.k8s-knative.yaml" "$svc"
+  fi
 done
 
 echo ""
 echo "=== Done ==="
-echo "Generated .k8s.yaml files are ready for deployment with deploy.sh"
+echo "Generated manifests are ready for deployment with deploy.sh or service-specific scripts."

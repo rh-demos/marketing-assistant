@@ -413,7 +413,6 @@ def _restore_trace_context(headers):
 class CreativeProducerAgent:
     async def generate(self, params: dict, agent_headers: dict = None) -> dict:
         campaign_id = params.get("campaign_id", "unknown")
-
         await publish_event(campaign_id, "agent_started", "Creative Producer", "Creating campaign visuals...")
 
         try:

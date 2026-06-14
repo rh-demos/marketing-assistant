@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import shutil
+import threading
 import uuid
 from pathlib import Path
 
@@ -334,6 +335,21 @@ def put_campaign(campaign_id: str):
     return jsonify({"status": "ok"}), 200
 
 
+def _warm_imagegen_mcp() -> None:
+    """Best-effort GET /healthz to wake imagegen-mcp (Knative scale-from-zero or Deployment)."""
+    base = settings.IMAGEGEN_MCP_URL.rstrip("/")
+    if not base:
+        return
+    try:
+        httpx.get(f"{base}/healthz", timeout=60.0, verify=False)
+    except Exception as e:
+        print(f"[ImageGen warmup] best-effort failed: {e}")
+
+
+def _schedule_imagegen_warmup() -> None:
+    threading.Thread(target=_warm_imagegen_mcp, daemon=True).start()
+
+
 @app.route("/api/campaigns/validate", methods=["POST"])
 def validate_campaign():
     try:
@@ -347,8 +363,10 @@ def validate_campaign():
         result = check_guardrails(name, desc)
         if not result["passed"]:
             return jsonify({"valid": False, "reason": result["reason"], "guardrail": result}), 200
+        _schedule_imagegen_warmup()
         return jsonify({"valid": True, "reason": "", "guardrail": result}), 200
     except Exception:
+        _schedule_imagegen_warmup()
         return jsonify({"valid": True, "reason": ""}), 200
 
 

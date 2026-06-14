@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: imagegen-mcp-config
+  labels:
+    app: imagegen-mcp
+data:
+  # PORT is omitted — Knative injects PORT automatically; app reads os.environ["PORT"]
+  CONFIG_SERVICE_URL: "http://config-service:8081"
+  LOG_LEVEL: "INFO"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.mlflow.svc.cluster.local:4318"
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://otel-collector.mlflow.svc.cluster.local:4318/v1/traces"
+  OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: "http/protobuf"
+  MLFLOW_TRACKING_URI: "http://mlflow-service.mlflow.svc.cluster.local:5000"
+  MLFLOW_EXPERIMENT_NAME: "marketing-assistant"
+  OTEL_SERVICE_NAME: "imagegen-mcp"
+  OTEL_METRICS_EXPORTER: "none"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: imagegen-mcp-secrets
+  labels:
+    app: imagegen-mcp
+type: Opaque
+stringData:
+  MODEL_ENDPOINT: "https://flux2-klein-4b-predictor.models.svc.cluster.local:8443/v1"
+  MODEL_NAME: "flux2-klein-4b"
+  MODEL_API_KEY: "<TODO>"
+---
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: imagegen-mcp
+  labels:
+    app: imagegen-mcp
+    app.kubernetes.io/name: imagegen-mcp
+    app.kubernetes.io/component: mcp
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "0"
+        autoscaling.knative.dev/max-scale: "1"
+        autoscaling.knative.dev/target: "10"
+        autoscaling.knative.dev/window: "60s"
+        autoscaling.knative.dev/scale-to-zero-pod-retention-period: "60s"
+    spec:
+      timeoutSeconds: 240
+      containerConcurrency: 3
+      containers:
+      - name: imagegen-mcp
+        image: quay.io/rh-demos/marketing-assistant/imagegen-mcp:1.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8083
+          name: http1
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: imagegen-mcp-config
+        - secretRef:
+            name: imagegen-mcp-secrets
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8083
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8083
+          initialDelaySeconds: 10
+          periodSeconds: 10

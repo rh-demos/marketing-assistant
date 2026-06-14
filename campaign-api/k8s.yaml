@@ -13,6 +13,7 @@ data:
   HAP_DETECTOR_URL: "http://guardrails-detector-ibm-hap-predictor.models.svc.cluster.local:8000"
   PROMPT_INJECTION_URL: "http://prompt-injection-detector-predictor.models.svc.cluster.local:8000"
   ORCHESTRATOR_URL: ""
+  IMAGEGEN_MCP_URL: "http://imagegen-mcp:8083"
   ASSET_STORAGE_PATH: "/data/campaigns"
   LOG_LEVEL: "INFO"
 ---
@@ -36,7 +37,7 @@ spec:
     spec:
       containers:
       - name: campaign-api
-        image: quay.io/rh-demos/marketing-assistant/campaign-api:1.0
+        image: quay.io/rh-demos/marketing-assistant/campaign-api:2.0
         imagePullPolicy: Always
         ports:
         - containerPort: 8089
