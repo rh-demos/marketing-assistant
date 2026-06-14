@@ -1,5 +1,7 @@
 import datetime
 import json
+import os
+import time
 import uuid
 from contextlib import nullcontext
 from typing import List
@@ -18,6 +20,11 @@ from app.schemas import (
 )
 from app.settings import settings
 from app.vertical_config import brand, prompt as vcfg_prompt
+from app.knative_helper import (
+    create_knative_service,
+    delete_knative_service,
+    get_knative_service_url,
+)
 
 _llm_client = AsyncOpenAI(
     base_url=settings.MODEL_ENDPOINT or "http://localhost:11434/v1",
@@ -267,11 +274,12 @@ def _do_k8s_deploy(campaign_id: str, html_content: str, namespace: str,
     campaign_api_base = f"http://campaign-api.{settings.APP_NAMESPACE}.svc:8089"
     html_content, hero_image_url = _extract_hero_image_url(html_content, campaign_api_base, campaign_id)
 
-    core_v1 = client.CoreV1Api()
-    apps_v1 = client.AppsV1Api()
     suffix = "preview" if is_preview else "live"
     deployment_name = f"campaign-{campaign_id[:8]}-{suffix}"
-    print(f"[Delivery Manager] Deploying {deployment_name} to {namespace}")
+
+    # Check Feature Flag
+    enable_knative = os.getenv("ENABLE_KNATIVE", "false").lower() == "true"
+    print(f"[Delivery Manager] Deploying {deployment_name} to {namespace} (Knative: {enable_knative})")
 
     try:
         _upload_asset(campaign_id, "template.html", html_content, "text/html")
@@ -281,57 +289,110 @@ def _do_k8s_deploy(campaign_id: str, html_content: str, namespace: str,
     except Exception as e:
         print(f"[Delivery Manager] Asset upload failed: {e}")
 
-    deployment = client.V1Deployment(
-        metadata=client.V1ObjectMeta(name=deployment_name),
-        spec=client.V1DeploymentSpec(
-            replicas=1,
-            selector=client.V1LabelSelector(match_labels={"app": deployment_name}),
-            template=client.V1PodTemplateSpec(
-                metadata=client.V1ObjectMeta(labels={"app": deployment_name}),
-                spec=client.V1PodSpec(
-                    containers=[
-                        client.V1Container(
-                            name="landing",
-                            image=settings.LANDING_IMAGE,
-                            image_pull_policy="Always",
-                            ports=[client.V1ContainerPort(container_port=3001)],
-                            env=[
-                                client.V1EnvVar(name="CAMPAIGN_API_URL", value=campaign_api_base),
-                                client.V1EnvVar(name="CAMPAIGN_ID", value=campaign_id),
-                            ],
-                        )
-                    ],
+    if enable_knative:
+        # Use Knative Service
+        print(f"[Delivery Manager] Using Knative Service mode")
+        env_vars = {
+            "CAMPAIGN_API_URL": campaign_api_base,
+            "CAMPAIGN_ID": campaign_id
+            # Note: PORT not set - managed automatically by Knative
+        }
+
+        result = create_knative_service(
+            service_name=deployment_name,
+            namespace=namespace,
+            image=settings.LANDING_IMAGE,
+            container_port=3001,
+            env_vars=env_vars,
+            min_scale=settings.KNATIVE_MIN_SCALE,
+            max_scale=settings.KNATIVE_MAX_SCALE,
+            timeout_seconds=120,
+            container_concurrency=50,
+            visibility="",  # External access
+            scale_to_zero_retention=settings.KNATIVE_SCALE_TO_ZERO_RETENTION,
+            autoscale_window=settings.KNATIVE_AUTOSCALE_WINDOW,
+        )
+
+        if result["status"] != "success":
+            print(f"[Delivery Manager] Failed to create Knative Service: {result.get('message')}")
+            return f"error://{namespace}/{deployment_name}"
+
+        # Get Knative Service external URL
+        max_retries = 10
+        url = ""
+
+        for attempt in range(max_retries):
+            url = get_knative_service_url(deployment_name, namespace)
+            if url:
+                break
+            print(f"[Delivery Manager] Waiting for Knative Service URL... (attempt {attempt + 1}/{max_retries})")
+            time.sleep(2)
+
+        if not url:
+            print(f"[Delivery Manager] Knative Service created but URL not ready after {max_retries} retries")
+            # Use internal DNS as fallback
+            url = f"http://{deployment_name}.{namespace}.svc.cluster.local"
+
+        print(f"[Delivery Manager] Campaign Landing deployed (Knative): {url}")
+        return url
+
+    else:
+        # Use traditional Deployment mode
+        print(f"[Delivery Manager] Using traditional Deployment mode")
+        core_v1 = client.CoreV1Api()
+        apps_v1 = client.AppsV1Api()
+
+        deployment = client.V1Deployment(
+            metadata=client.V1ObjectMeta(name=deployment_name),
+            spec=client.V1DeploymentSpec(
+                replicas=1,
+                selector=client.V1LabelSelector(match_labels={"app": deployment_name}),
+                template=client.V1PodTemplateSpec(
+                    metadata=client.V1ObjectMeta(labels={"app": deployment_name}),
+                    spec=client.V1PodSpec(
+                        containers=[
+                            client.V1Container(
+                                name="landing",
+                                image=settings.LANDING_IMAGE,
+                                image_pull_policy="Always",
+                                ports=[client.V1ContainerPort(container_port=3001)],
+                                env=[
+                                    client.V1EnvVar(name="CAMPAIGN_API_URL", value=campaign_api_base),
+                                    client.V1EnvVar(name="CAMPAIGN_ID", value=campaign_id),
+                                ],
+                            )
+                        ],
+                    ),
                 ),
             ),
-        ),
-    )
+        )
 
-    try:
-        apps_v1.create_namespaced_deployment(namespace=namespace, body=deployment)
-        print(f"[Delivery Manager] Deployment created")
-    except ApiException as e:
-        if e.status == 409:
-            apps_v1.replace_namespaced_deployment(name=deployment_name, namespace=namespace, body=deployment)
-            print(f"[Delivery Manager] Deployment replaced")
-        else:
-            print(f"[Delivery Manager] Deployment failed: {e.status} {e.reason}")
-            raise
+        try:
+            apps_v1.create_namespaced_deployment(namespace=namespace, body=deployment)
+            print(f"[Delivery Manager] Deployment created")
+        except ApiException as e:
+            if e.status == 409:
+                apps_v1.replace_namespaced_deployment(name=deployment_name, namespace=namespace, body=deployment)
+                print(f"[Delivery Manager] Deployment replaced")
+            else:
+                print(f"[Delivery Manager] Deployment failed: {e.status} {e.reason}")
+                raise
 
-    service = client.V1Service(
-        metadata=client.V1ObjectMeta(name=deployment_name),
-        spec=client.V1ServiceSpec(
-            selector={"app": deployment_name},
-            ports=[client.V1ServicePort(port=80, target_port=3001)],
-        ),
-    )
+        service = client.V1Service(
+            metadata=client.V1ObjectMeta(name=deployment_name),
+            spec=client.V1ServiceSpec(
+                selector={"app": deployment_name},
+                ports=[client.V1ServicePort(port=80, target_port=3001)],
+            ),
+        )
 
-    try:
-        core_v1.create_namespaced_service(namespace=namespace, body=service)
-        print(f"[Delivery Manager] Service created")
-    except ApiException as e:
-        if e.status != 409:
-            print(f"[Delivery Manager] Service failed: {e.status} {e.reason}")
-            raise
+        try:
+            core_v1.create_namespaced_service(namespace=namespace, body=service)
+            print(f"[Delivery Manager] Service created")
+        except ApiException as e:
+            if e.status != 409:
+                print(f"[Delivery Manager] Service failed: {e.status} {e.reason}")
+                raise
 
     route_url = f"https://{deployment_name}-{namespace}.{settings.CLUSTER_DOMAIN}/"
 
@@ -368,33 +429,46 @@ def cleanup_campaign_k8s(campaign_id: str):
         print(f"[Delivery Manager] No K8s config — skipping cleanup for {campaign_id}")
         return {"status": "skipped", "reason": "no k8s config"}
 
-    core_v1 = client.CoreV1Api()
-    apps_v1 = client.AppsV1Api()
-    custom_api = client.CustomObjectsApi()
+    # Check Feature Flag
+    enable_knative = os.getenv("ENABLE_KNATIVE", "false").lower() == "true"
+    print(f"[Delivery Manager] Cleanup mode: {'Knative' if enable_knative else 'Deployment'}")
+
     short_id = campaign_id[:8]
     deleted = []
 
     for namespace in [settings.DEV_NAMESPACE, settings.PROD_NAMESPACE]:
         for suffix in ["preview", "live"]:
             name = f"campaign-{short_id}-{suffix}"
-            for resource, delete_fn in [
-                ("Deployment", lambda n=name, ns=namespace: apps_v1.delete_namespaced_deployment(n, ns)),
-                ("Service", lambda n=name, ns=namespace: core_v1.delete_namespaced_service(n, ns)),
-                ("ConfigMap", lambda n=name, ns=namespace: core_v1.delete_namespaced_config_map(f"{n}-data", ns)),
-            ]:
+
+            if enable_knative:
+                # Delete Knative Service (automatically delete associated Revision, Route)
+                result = delete_knative_service(name, namespace)
+                if result["status"] == "success":
+                    deleted.append(f"KnativeService/{name} in {namespace}")
+            else:
+                # Delete traditional Deployment + Service + Route
+                core_v1 = client.CoreV1Api()
+                apps_v1 = client.AppsV1Api()
+                custom_api = client.CustomObjectsApi()
+
+                for resource, delete_fn in [
+                    ("Deployment", lambda n=name, ns=namespace: apps_v1.delete_namespaced_deployment(n, ns)),
+                    ("Service", lambda n=name, ns=namespace: core_v1.delete_namespaced_service(n, ns)),
+                    ("ConfigMap", lambda n=name, ns=namespace: core_v1.delete_namespaced_config_map(f"{n}-data", ns)),
+                ]:
+                    try:
+                        delete_fn()
+                        deleted.append(f"{resource}/{name} in {namespace}")
+                    except ApiException as e:
+                        if e.status != 404:
+                            print(f"[Delivery Manager] Failed to delete {resource} {name} in {namespace}: {e.reason}")
                 try:
-                    delete_fn()
-                    deleted.append(f"{resource}/{name} in {namespace}")
-                except ApiException as e:
-                    if e.status != 404:
-                        print(f"[Delivery Manager] Failed to delete {resource} {name} in {namespace}: {e.reason}")
-            try:
-                custom_api.delete_namespaced_custom_object(
-                    group="route.openshift.io", version="v1",
-                    namespace=namespace, plural="routes", name=name)
-                deleted.append(f"Route/{name} in {namespace}")
-            except Exception:
-                pass
+                    custom_api.delete_namespaced_custom_object(
+                        group="route.openshift.io", version="v1",
+                        namespace=namespace, plural="routes", name=name)
+                    deleted.append(f"Route/{name} in {namespace}")
+                except Exception:
+                    pass
 
     try:
         with httpx.Client(timeout=10.0) as hc:

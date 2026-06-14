@@ -23,6 +23,13 @@ data:
   MLFLOW_EXPERIMENT_NAME: "marketing-assistant"
   OTEL_SERVICE_NAME: "delivery-manager"
   OTEL_METRICS_EXPORTER: "none"
+  # Knative Feature Flag (default=false, enable "true")
+  ENABLE_KNATIVE: "false"
+  # Knative Autoscaling Parameters
+  KNATIVE_MIN_SCALE: "0"
+  KNATIVE_MAX_SCALE: "3"
+  KNATIVE_SCALE_TO_ZERO_RETENTION: "30s"
+  KNATIVE_AUTOSCALE_WINDOW: "30s"
 ---
 apiVersion: v1
 kind: Secret
@@ -57,7 +64,7 @@ spec:
       serviceAccountName: delivery-manager
       containers:
       - name: delivery-manager
-        image: quay.io/rh-demos/marketing-assistant/delivery-manager:1.0
+        image: quay.io/rh-demos/marketing-assistant/delivery-manager:2.0
         imagePullPolicy: Always
         ports:
         - containerPort: 8087
@@ -147,6 +154,28 @@ rules:
   - update
   - patch
   - delete
+# Knative Service permissions
+- apiGroups:
+  - serving.knative.dev
+  resources:
+  - services
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - serving.knative.dev
+  resources:
+  - configurations
+  - revisions
+  - routes
+  verbs:
+  - get
+  - list
+  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

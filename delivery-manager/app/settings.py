@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     CONFIG_SERVICE_URL: str = "http://localhost:8081"
     LOG_LEVEL: str = "INFO"
 
+    # Knative Autoscaling Parameters
+    KNATIVE_MIN_SCALE: int = 0
+    KNATIVE_MAX_SCALE: int = 3
+    KNATIVE_SCALE_TO_ZERO_RETENTION: str = "30m"
+    KNATIVE_AUTOSCALE_WINDOW: str = "60s"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

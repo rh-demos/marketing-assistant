@@ -10,6 +10,8 @@ Part of the [Marketing AI Assistant](../README.md) project.
 - [UV](https://docs.astral.sh/uv/)
 - Access to an OpenAI-compatible LLM endpoint (real mode)
 - OpenShift cluster with target namespaces (for deployment skills)
+- [OpenShift Serverless](https://docs.openshift.com/serverless/latest/) (Knative Serving) — required only when `ENABLE_KNATIVE=true`
+- Need to install openshift-serverless component first
 - Running [campaign-api](../campaign-api/) instance (for email delivery)
 
 ## Project Structure
@@ -21,6 +23,7 @@ delivery-manager/
 │   ├── __main__.py          # Entry point (uv run app)
 │   ├── settings.py           # Pydantic settings
 │   ├── agent.py              # Email gen, deploy, and send logic
+│   ├── knative_helper.py     # Knative Service create/delete helpers
 │   └── agent_executor.py     # A2A agent executor
 ├── k8s.yaml                  # OpenShift manifests (Deployment + Service + ConfigMap)
 ├── Containerfile
@@ -52,13 +55,20 @@ curl http://localhost:8087/.well-known/agent-card.json
 ### Build the container image
 
 ```bash
-./build.sh            # pushes quay.io/jonkey/marketing-assistant/delivery-manager:latest
-./build.sh v1.2.0     # pushes quay.io/jonkey/marketing-assistant/delivery-manager:v1.2.0
+./build.sh            # pushes quay.io/rh-demos/marketing-assistant/delivery-manager:latest
+./build.sh v1.2.0     # pushes quay.io/rh-demos/marketing-assistant/delivery-manager:v1.2.0
 ```
 
 ### Configure manifests
 
-Edit `k8s.yaml` and replace all `<TODO>` placeholders:
+Generate deployment manifests from the template (recommended):
+
+```bash
+# From marketing-assistant/ — fills <TODO> placeholders (tokens, cluster domain)
+../fill-env.sh
+```
+
+Or edit `k8s.yaml` manually and replace all `<TODO>` placeholders:
 
 | Placeholder | Location | Description |
 |---|---|---|
@@ -71,17 +81,85 @@ Edit `k8s.yaml` and replace all `<TODO>` placeholders:
 ### Apply manifests
 
 ```bash
-oc apply -f k8s.yaml -n $NAMESPACE
+# Prefer the generated manifest (contains resolved secrets)
+oc apply -f .k8s.yaml -n $NAMESPACE
+oc rollout status deployment/delivery-manager -n $NAMESPACE
+```
+
+To redeploy after changing only `k8s.yaml`:
+
+```bash
+../fill-env.sh
+oc apply -f .k8s.yaml -n $NAMESPACE
 oc rollout status deployment/delivery-manager -n $NAMESPACE
 ```
 
 ### RBAC
 
-Delivery Manager needs cluster-wide permissions to create K8s resources (ConfigMap, Deployment, Service, Route) in `DEV_NAMESPACE` and `PROD_NAMESPACE` for campaign landing page deployment. The `k8s.yaml` includes:
+Delivery Manager needs cluster-wide permissions to create resources in `DEV_NAMESPACE` and `PROD_NAMESPACE` for campaign landing page deployment. The `k8s.yaml` includes:
 
 - **ServiceAccount** `delivery-manager`
-- **ClusterRole** `delivery-manager-deployer` — grants CRUD on configmaps, services, deployments, and routes
+- **ClusterRole** `delivery-manager-deployer` — grants CRUD on configmaps, services, deployments, OpenShift routes, and Knative services
 - **ClusterRoleBinding** `delivery-manager-deployer-binding` — binds the role to the ServiceAccount; set `subjects[0].namespace` to the namespace where delivery-manager is deployed
+
+## Campaign Landing Deployment
+
+When `deploy_preview` or `deploy_production` runs, delivery-manager uploads campaign assets to campaign-api, then provisions a per-campaign landing page workload in the target namespace (`DEV_NAMESPACE` or `PROD_NAMESPACE`).
+
+The deployment mode is controlled by the `ENABLE_KNATIVE` feature flag in the `delivery-manager-config` ConfigMap.
+
+| Mode | `ENABLE_KNATIVE` | Resources created | URL source |
+|---|---|---|---|
+| **Traditional** (default) | `false` | Deployment + Service + OpenShift Route | Route `spec.host` |
+| **Knative** | `true` | Knative Service (`serving.knative.dev/v1`) | Knative Service `status.url` (Kourier ingress) |
+
+Traditional mode creates fixed single-replica Deployments. Knative mode enables scale-to-zero, concurrency-based autoscaling, and revision management — useful when many campaigns are deployed intermittently.
+
+### Enable Knative mode
+
+**Prerequisites**
+
+1. OpenShift Serverless (Knative Serving) is installed and ready:
+
+   ```bash
+   oc get knativeserving -n knative-serving
+   oc get pods -n knative-serving
+   oc get pods -n knative-serving-ingress   # Kourier gateway
+   ```
+
+   See [infra/serverless](../../infra/serverless/README.md) for installation with Kustomize.
+
+2. Target namespaces exist (`marketing-dev`, `marketing-prod` by default). `deploy.sh` creates these automatically.
+
+**Steps**
+
+1. Edit `k8s.yaml` — set the feature flag and optional autoscaling parameters in `delivery-manager-config`:
+
+   ```yaml
+   data:
+     ENABLE_KNATIVE: "true"
+     KNATIVE_MIN_SCALE: "0"          # scale to zero when idle
+     KNATIVE_MAX_SCALE: "3"
+     KNATIVE_SCALE_TO_ZERO_RETENTION: "30s"
+     KNATIVE_AUTOSCALE_WINDOW: "30s"
+   ```
+
+**Switch back to traditional mode**
+
+Set `ENABLE_KNATIVE: "false"`
+
+> **Note:** Changing `ENABLE_KNATIVE` only affects *new* deploy and cleanup operations. Existing campaign workloads keep their original resource type until redeployed or deleted.
+
+### Knative autoscaling parameters
+
+| Variable | ConfigMap default | Description |
+|---|---|---|
+| `KNATIVE_MIN_SCALE` | `0` | Minimum replicas per landing Knative Service (`0` = scale to zero) |
+| `KNATIVE_MAX_SCALE` | `3` | Maximum replicas under load |
+| `KNATIVE_SCALE_TO_ZERO_RETENTION` | `30s` | How long the last pod stays after traffic stops |
+| `KNATIVE_AUTOSCALE_WINDOW` | `30s` | Stable window for autoscaling decisions |
+
+These map to Knative annotations (`autoscaling.knative.dev/*`) in `knative_helper.py`. The landing container listens on port `3001`; Knative manages the `PORT` environment variable — do not set it in the service spec.
 
 ## Configuration
 
@@ -98,8 +176,13 @@ Delivery Manager needs cluster-wide permissions to create K8s resources (ConfigM
 | `PROD_NAMESPACE` | `marketing-prod` | Namespace for production deployments |
 | `APP_NAMESPACE` | `marketing` | Namespace where delivery-manager is deployed |
 | `AGENT_ENDPOINT` | _(empty)_ | Public A2A endpoint URL (set in cluster, e.g. `http://delivery-manager:8087`) |
-| `LANDING_IMAGE` | `quay.io/rh-ee-dayeo/marketing-assistant:campaign-landing` | Container image for landing pages |
+| `LANDING_IMAGE` | `quay.io/rh-demos/marketing-assistant/campaign-landing:1.0` | Container image for landing pages |
 | `LOG_LEVEL` | `INFO` | Python log level |
+| `ENABLE_KNATIVE` | `false` | Feature flag: `true` deploys landing pages as Knative Services |
+| `KNATIVE_MIN_SCALE` | `0` | Min replicas for landing Knative Services (ConfigMap overrides `settings.py`) |
+| `KNATIVE_MAX_SCALE` | `3` | Max replicas for landing Knative Services |
+| `KNATIVE_SCALE_TO_ZERO_RETENTION` | `30m` in code / `30s` in ConfigMap | Idle pod retention before scale-to-zero |
+| `KNATIVE_AUTOSCALE_WINDOW` | `60s` in code / `30s` in ConfigMap | Autoscaling stable window |
 
 ## Interface
 
@@ -204,5 +287,7 @@ Delivery Manager
        │
        ├──► LLM            (email generation)
        ├──► K8s API         (deploy preview / production)
+       │         ├── ENABLE_KNATIVE=false → Deployment + Service + Route
+       │         └── ENABLE_KNATIVE=true  → Knative Service (scale-to-zero)
        └──► Campaign API    (inbox / email delivery)
 ```
