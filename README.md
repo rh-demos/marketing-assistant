@@ -125,10 +125,17 @@ marketing-assistant/
 │   ├── guardrails/         # TrustyAI guardrails (HAP, prompt injection, orchestrator)
 │   ├── mlflow/             # MLflow + OTEL Collector (tracing infrastructure)
 │   └── keycloak/           # Keycloak SSO (PostgreSQL + Keycloak server)
+├── kustomize/
+│   ├── base/               # Aggregates all 12 service k8s.yaml
+│   ├── overlays/demo/      # Demo overlay: secrets, domain, namespace patches
+│   └── components/         # Optional: no-kata, knative-imagegen
 ├── build-and-push.sh       # Build & push all container images
-├── deploy.sh               # Deploy application to OpenShift
-├── undeploy.sh             # Remove application from OpenShift
+├── setup-svc-env.sh        # Prepare cluster env (namespaces, Keycloak, MLflow)
 ├── fill-env.sh             # Fill k8s.yaml templates → .k8s.yaml (tokens, domain)
+├── deploy.sh               # Deploy services via oc apply
+├── kfill-env.sh            # Fill Kustomize overlay secrets from cluster
+├── kdeploy.sh              # Deploy services via Kustomize
+├── undeploy.sh             # Remove application from OpenShift
 ├── clear-traces.sh         # Clear MLflow tracing data
 ├── run.sh                  # Start all services locally
 └── stop.sh                 # Stop all services
@@ -253,21 +260,42 @@ Traces are visible in the MLflow UI under the `marketing-assistant` experiment.
 
 ### Deploy
 
+Two deployment methods are supported. Both produce equivalent results.
+
+#### Method A: fill-env + deploy (development)
+
 ```bash
 # 1. Generate .k8s.yaml from templates (fills MODEL_API_KEY, CLUSTER_DOMAIN, etc.)
 ./fill-env.sh
 
-# 2. Deploy application
+# 2. Prepare cluster environment (namespaces, Keycloak SSO, MLflow)
+./setup-svc-env.sh
+
+# 3. Deploy services
 ./deploy.sh
 ```
 
-`fill-env.sh` reads model SA tokens from the cluster and fills `<TODO>` placeholders in each service's `k8s.yaml` → `.k8s.yaml`.
+#### Method B: Kustomize (GitOps-ready)
 
-`deploy.sh` handles:
+```bash
+# 1. Populate Kustomize overlay secrets from cluster
+./kfill-env.sh [overlay]
+
+# 2. Prepare cluster environment (namespaces, Keycloak SSO, MLflow)
+./setup-svc-env.sh
+
+# 3. Deploy via Kustomize
+./kdeploy.sh [overlay]
+```
+
+**`setup-svc-env.sh`** handles all imperative operations that cannot be expressed as K8s manifests:
 - Namespace creation (`marketing`, `marketing-dev`, `marketing-prod`)
-- `vertical-config` ConfigMap (config-service verticals)
-- All service manifests (`.k8s.yaml` priority, fallback to `k8s.yaml`)
+- MLflow experiment creation (PostgreSQL SQL)
 - Keycloak SSO: `marketing-ui` client (public, PKCE), demo users (alice/bob), roles
+
+**`deploy.sh`** applies service manifests via `oc apply` (`.k8s.yaml` priority, fallback to `k8s.yaml`).
+
+**`kdeploy.sh`** applies all manifests via `oc kustomize | oc apply`. The deploy step is purely declarative — suitable for future GitOps (ArgoCD / Flux).
 
 ### Uninstall
 

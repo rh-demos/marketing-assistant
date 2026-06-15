@@ -1,0 +1,92 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: marketing
+
+# --- Secret replacement (MODEL_API_KEY) ---
+# Each .env file contains: MODEL_API_KEY=<token>
+# Run fill-secrets-kust.sh to generate them from the models namespace.
+secretGenerator:
+  - name: imagegen-mcp-secrets
+    behavior: replace
+    literals:
+      - MODEL_ENDPOINT=https://flux2-klein-4b-predictor.models.svc.cluster.local:8443/v1
+      - MODEL_NAME=flux2-klein-4b
+    envs:
+      - secrets/imagegen-mcp.env
+  - name: creative-producer-secrets
+    behavior: replace
+    literals:
+      - MODEL_ENDPOINT=https://qwen3-coder-30b-predictor.models.svc.cluster.local:8443/v1
+      - MODEL_NAME=qwen3-coder-30b
+    envs:
+      - secrets/creative-producer.env
+  - name: customer-analyst-secrets
+    behavior: replace
+    literals:
+      - MODEL_ENDPOINT=https://qwen3-32b-fp8-dynamic-predictor.models.svc.cluster.local:8443/v1
+      - MODEL_NAME=qwen3-32b-fp8-dynamic
+    envs:
+      - secrets/customer-analyst.env
+  - name: policy-guardian-secrets
+    behavior: replace
+    literals:
+      - MODEL_ENDPOINT=https://qwen3-32b-fp8-dynamic-predictor.models.svc.cluster.local:8443/v1
+      - MODEL_NAME=qwen3-32b-fp8-dynamic
+    envs:
+      - secrets/policy-guardian.env
+  - name: delivery-manager-secrets
+    behavior: replace
+    literals:
+      - MODEL_ENDPOINT=https://qwen3-32b-fp8-dynamic-predictor.models.svc.cluster.local:8443/v1
+      - MODEL_NAME=qwen3-32b-fp8-dynamic
+    envs:
+      - secrets/delivery-manager.env
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+# --- Patches (replace <TODO> placeholders) ---
+patches:
+  # CLUSTER_DOMAIN → campaign-director
+  - target:
+      kind: ConfigMap
+      name: campaign-director-config
+    patch: |-
+      - op: replace
+        path: /data/CLUSTER_DOMAIN
+        value: CLUSTER_DOMAIN_PLACEHOLDER
+  # CLUSTER_DOMAIN → delivery-manager
+  - target:
+      kind: ConfigMap
+      name: delivery-manager-config
+    patch: |-
+      - op: replace
+        path: /data/CLUSTER_DOMAIN
+        value: CLUSTER_DOMAIN_PLACEHOLDER
+  # namespace → delivery-manager ClusterRoleBinding
+  - target:
+      kind: ClusterRoleBinding
+      name: delivery-manager-deployer-binding
+    patch: |-
+      - op: replace
+        path: /subjects/0/namespace
+        value: marketing
+  # Keycloak config → frontend
+  - target:
+      kind: ConfigMap
+      name: frontend-keycloak-config
+    patch: |-
+      - op: replace
+        path: /data/keycloak-config.js
+        value: |
+          window.__KEYCLOAK_URL__ = "KC_URL_PLACEHOLDER";
+          window.__KEYCLOAK_REALM__ = "marketing";
+          window.__KEYCLOAK_CLIENT_ID__ = "marketing-ui";
+
+# Uncomment to remove Kata runtime for clusters without it:
+# components:
+#   - ../../components/no-kata

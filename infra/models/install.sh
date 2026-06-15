@@ -95,9 +95,16 @@ done
 # ---------------------------------------------------------------------------
 echo "[2/2] Deploying models..."
 
+echo "  Waiting for InferenceService CRD..."
+for i in $(seq 1 30); do
+  oc get crd inferenceservices.serving.kserve.io &>/dev/null && break
+  sleep 2
+done
+oc get crd inferenceservices.serving.kserve.io &>/dev/null || echo "  WARNING: InferenceService CRD not found"
+
 for f in "$SCRIPT_DIR"/*.yaml; do
   echo "  $(basename "$f")"
-  oc apply -f "$f" -n "$NAMESPACE" 2>/dev/null || true
+  oc apply -f "$f" -n "$NAMESPACE"
 done
 
 echo ""
