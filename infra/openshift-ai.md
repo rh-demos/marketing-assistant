@@ -17,6 +17,33 @@
 - Leader Worker Set Operator
 - Red Hat OpenShift AI - **3.x**
 
+### OpenShift Serverless (optional, for Knative)
+
+- Red Hat OpenShift Serverless Operator
+
+Install from OperatorHub, then create KnativeServing:
+
+```yaml
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+  name: knative-serving
+  namespace: knative-serving
+spec:
+  ingress:
+    istio:
+      enabled: false
+    kourier:
+      enabled: true
+  config:
+    network:
+      ingress-class: kourier.ingress.networking.knative.dev
+```
+
+Used by:
+- **imagegen-mcp**: scale-to-zero when no image generation requests (kustomize component: `knative-imagegen`)
+- **delivery-manager**: `ENABLE_KNATIVE=true` deploys campaign-landing as Knative Service instead of Deployment
+
 ## DataScienceCluster
 
 ```

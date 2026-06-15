@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Extends demo overlay with Knative features:
+#   - imagegen-mcp: Knative Service (scale to zero)
+#   - delivery-manager: ENABLE_KNATIVE=true (deploy campaign-landing as Knative Service)
+#
+# Requires: Red Hat OpenShift Serverless + KnativeServing
+
+resources:
+  - ../demo
+
+components:
+  - ../../components/knative-imagegen
+
+patches:
+  # Knative Service routes through kourier on port 80 (not 8083)
+  - target:
+      kind: ConfigMap
+      name: creative-producer-config
+    patch: |-
+      - op: replace
+        path: /data/IMAGEGEN_MCP_URL
+        value: "http://imagegen-mcp.marketing.svc.cluster.local"
+  - target:
+      kind: ConfigMap
+      name: campaign-api-config
+    patch: |-
+      - op: replace
+        path: /data/IMAGEGEN_MCP_URL
+        value: "http://imagegen-mcp.marketing.svc.cluster.local"
+  # delivery-manager: enable Knative deployment for campaign-landing
+  - target:
+      kind: ConfigMap
+      name: delivery-manager-config
+    patch: |-
+      - op: replace
+        path: /data/ENABLE_KNATIVE
+        value: "true"

@@ -1,10 +1,11 @@
-apiVersion: kustomize.config.k8s.io/v1beta1
+apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
-# Replace standard imagegen-mcp Deployment+Service with Knative Service.
-# The k8s-knative.yaml already contains ConfigMap + Secret + Knative Service,
-# so we remove the Deployment and ClusterIP Service from base and add the
-# Knative variant.
+# Replace imagegen-mcp Deployment+Service with Knative Service.
+# - Deletes Deployment and ClusterIP Service from base
+# - Removes PORT from ConfigMap (Knative injects PORT automatically)
+# - The Knative Service is applied separately by kdeploy.sh (kustomize $patch:delete
+#   cannot distinguish v1/Service from serving.knative.dev/v1/Service by name)
 
 patches:
   - target:
@@ -29,20 +30,5 @@ patches:
       kind: ConfigMap
       name: imagegen-mcp-config
     patch: |-
-      $patch: delete
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: imagegen-mcp-config
-  - target:
-      kind: Secret
-      name: imagegen-mcp-secrets
-    patch: |-
-      $patch: delete
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: imagegen-mcp-secrets
-
-resources:
-  - ../../../imagegen-mcp/k8s-knative.yaml
+      - op: remove
+        path: /data/PORT

@@ -127,15 +127,18 @@ marketing-assistant/
 │   └── keycloak/           # Keycloak SSO (PostgreSQL + Keycloak server)
 ├── kustomize/
 │   ├── base/               # Aggregates all 12 service k8s.yaml
-│   ├── overlays/demo/      # Demo overlay: secrets, domain, namespace patches
+│   ├── overlays/
+│   │   ├── demo/           # Standard deployment
+│   │   └── demo-knative/   # Knative mode (imagegen scale-to-zero, Knative campaign-landing)
 │   └── components/         # Optional: no-kata, knative-imagegen
 ├── build-and-push.sh       # Build & push all container images
 ├── setup-svc-env.sh        # Prepare cluster env (namespaces, Keycloak, MLflow)
+├── teardown-svc-env.sh     # Remove cluster env (Keycloak cleanup, delete namespaces)
 ├── fill-env.sh             # Fill k8s.yaml templates → .k8s.yaml (tokens, domain)
 ├── deploy.sh               # Deploy services via oc apply
+├── undeploy.sh             # Remove services deployed by deploy.sh
 ├── kfill-env.sh            # Fill Kustomize overlay secrets from cluster
 ├── kdeploy.sh              # Deploy services via Kustomize
-├── undeploy.sh             # Remove application from OpenShift
 ├── clear-traces.sh         # Clear MLflow tracing data
 ├── run.sh                  # Start all services locally
 └── stop.sh                 # Stop all services
@@ -297,13 +300,22 @@ Two deployment methods are supported. Both produce equivalent results.
 
 **`kdeploy.sh`** applies all manifests via `oc kustomize | oc apply`. The deploy step is purely declarative — suitable for future GitOps (ArgoCD / Flux).
 
+Available overlays:
+
+| Overlay | Description |
+|---|---|
+| `demo` | Standard deployment (Deployment + ClusterIP for all services) |
+| `demo-knative` | Knative mode: imagegen-mcp scales to zero, delivery-manager deploys campaign-landing as Knative Service. Requires [OpenShift Serverless](infra/openshift-ai.md#openshift-serverless-optional-for-knative). |
+
 ### Uninstall
 
 ```bash
+# 1. Remove services
 ./undeploy.sh
-```
 
-Removes all application resources, Keycloak client/users/roles, and namespaces (`marketing`, `marketing-dev`, `marketing-prod`).
+# 2. Remove cluster environment (Keycloak, namespaces)
+./teardown-svc-env.sh
+```
 
 ### Operational Scripts
 
