@@ -95,6 +95,7 @@ fill_manifest() {
     -e "s|namespace: \"<TODO>\"|namespace: \"$NAMESPACE\"|g" \
     -e "s|MODEL_API_KEY: \"<TODO>\"|MODEL_API_KEY: \"$token\"|g" \
     -e "s|<TODO_KC_ISSUER>|$KC_ISSUER|g" \
+    -e "s|<TODO_NAMESPACE>|$NAMESPACE|g" \
     "$src" > "$dst"
 
   echo "  $svc ($(basename "$src")): generated"
